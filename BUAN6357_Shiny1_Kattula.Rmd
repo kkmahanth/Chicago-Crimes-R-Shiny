@@ -1,0 +1,243 @@
+---
+title: "Shiny Assignment"
+author: "Karthik Mahanth Kattula"
+date: "6/6/2020"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(tidyverse,shiny,lubridate,ggpubr,ggplot2,DMwR,dplyr,leaflet)
+```
+
+
+#Load chicago crimes data for year 2018 into R as dataframe and examine the structure and summary of the data 
+```{r readData}
+crimes<-read.csv("Crimes_-_2018.csv")
+str(crimes)
+summary(crimes)
+
+```
+
+#Totally 268025 crimes are reported in Chicago in year 2018 and from summary command we see that there are some missing values in some incidents and also we need to convert few data types because few features which are supposed to be factors are loaded as numeric and character. As there are many features, I will be concentrating more on features which have high significance based on domain knowledge and my understanding. One such feature is District and Ward where they have to be factors but treated as numeric So needs to convert them to factor variables and also Date is loaded as character and we need to convert it into PosiXct Date Time Object so that we can create new features such as Month, Hour from Date Time Object which will be useful to us in later part of analysis. Primary Type is loaded as Character but actually these should be factors because these are the Primary Type of crimes based on IUCR code. From Summary, we see that number of missing values is same for both X coordinate, Y coordinate, Latitude and Longitude
+```{r Data Preprocessing}
+#Convert Date to DateTime PosiXct object and create new columns DateTime, Month and Hour which are extracted from DateTime Object
+crimes$DateTime<-parse_date_time(crimes$Date,'%m/%d/%Y %I:%M:%S %p')
+crimes$hour<-hour(crimes$DateTime)
+crimes$month<-month(crimes$DateTime)
+mymonths <- c("January","February","March",
+              "April","May","June",
+              "July","August","September",
+              "October","November","December")
+
+
+#Months extracted will be in one two three numeric format so basically converting those to specific abbrevations
+crimes$month<-mymonths[crimes$month]
+
+#levels of Primary Type crime category
+levels(as.factor(crimes$Primary.Type))
+
+#Number of observations with level Non - Criminal (Subject Specified)
+nrow(filter(crimes,Primary.Type=="NON-CRIMINAL (SUBJECT SPECIFIED)"))
+
+```
+#There are 33 Unique type of crimes commited in chicago in year 2018 but when we carefully examine the levels we see that levels Criminal Sexual Assault and Crim Sexual Assault both belongs to same and verified the IUCR code as well in data.cityofchicago.org portal. Similarly to Non-Criminal and Non-Criminal(Subject Specified) and the number of incidents having Non Criminal Subject specified is very very less when compared with actual data set. Hence combining these two will not affect anything
+
+```{r Data Pre Processing}
+crimes$Primary.Type<-ifelse(crimes$Primary.Type %in% c("CRIMINAL SEXUAL ASSAULT","CRIM SEXUAL ASSAULT"),"CRIM SEXUAL ASSAULT",crimes$Primary.Type)
+
+crimes$Primary.Type<-ifelse(crimes$Primary.Type %in% c("NON-CRIMINAL","NON-CRIMINAL (SUBJECT SPECIFIED)"),"NON-CRIMINAL",crimes$Primary.Type)
+
+```
+
+#Find number of missing values in each feature 
+```{r Data Pre Processing}
+apply(crimes,2,function(x) sum(is.na(x)))
+
+```
+
+#Find percentage of missing values in each column
+```{r Data Pre Processing}
+apply(crimes,2,function(x) sum(is.na(x))/length(crimes$ID))
+```
+
+#Approximately we see that 1.7% of values are NA's in Latitude and Longitude and the percentage of NA's in ward is very very less.Now since the percetage of missing values is very very less not even 2% we can omit this incidents. But if we are more concerned and not to lose any information we can impute for these missing values i.e. we can impute categorical variables with Mode and numerical variables with either mean or median. Till now we didnt convert features to categorical because we do not require all features as part of this assignment. Parallely we will do preprocessing whenever required further
+
+```{r Data Preprocessing}
+ggplot(crimes%>%group_by(`Location.Description`)%>%summarise(counts=n())%>%arrange(-counts), 
+       aes(x = `Location.Description`, y = counts)) + 
+       geom_bar(fill = "#0073C2FF", stat = "identity") + 
+       geom_text(aes(label = `Location.Description`), vjust = -0.3) + 
+       theme_pubclean()
+
+```
+#Residence, Streets, Apartments and Sidewalk accounts for more than 50% of incidents in year 2018
+
+#Subset dataframe with features which we require in our further analysis
+```{r Data Preprocessing}
+final_df<-crimes[,c(1,6,20,21,23,24,25)]
+str(final_df)
+summary(final_df)
+```
+#Latitude and Longitude are required for plotting in Map and needs to convert hour,month and Primary Type as factors 
+```{r Data Pre Processing}
+cols<-c("Primary.Type","hour","month")
+final_df[cols]<-lapply(final_df[cols],factor)
+str(final_df)
+```
+#Even the percentage of missing values is very very less i.e. 1% approximately instead of omitting these incidents we can impute them 
+```{r Data Pre Processing}
+list_na <- colnames(final_df)[ apply(final_df, 2, anyNA) ]
+average_missing <- apply(final_df[,colnames(final_df) %in% list_na],
+                         2,
+                         mean,
+                         na.rm =  TRUE)
+
+
+final_df <- final_df %>%
+  mutate(Latitude  = ifelse(is.na(Latitude), average_missing[1], Latitude),
+         Longitude = ifelse(is.na(Longitude), average_missing[2], Longitude))
+
+apply(final_df,2,function(x) sum(is.na(x)))
+
+#Converting Date Time to Date alone for plotting purpose based on Date in Map Tab
+final_df$DateTime<-as.Date(final_df$DateTime)
+
+head(final_df)
+```
+```{r Preparing for Three Different Tabs}
+
+#Preparing Data for Tab1:: Frequency of crime by month and type combinations
+crime_type_month_freq<-data.frame(final_df%>%group_by(Primary.Type,month)%>%summarise(counts=n(),.groups = 'drop'))
+names(crime_type_month_freq)<-c("Crime","Month","Frequency")
+crime_type_month_freq$Month<-factor(crime_type_month_freq$Month,levels = month.name)
+
+
+
+#Preparing Data for Tab2:: Location of crimes by Date on Map
+crime_loc_date_map<-data.frame(final_df$DateTime,final_df$Latitude,final_df$Longitude)
+names(crime_loc_date_map)<-c("DateTime","Latitude","Longitude")
+
+
+#Preparing Data for Tab3:: Type of crime and Hour of crime when it was committed
+crime_type_hour_heatmap<-data.frame(final_df%>%group_by(`Primary.Type`,hour)%>%summarise(counts=n(),.groups = 'drop'))
+names(crime_type_hour_heatmap)<-c("Crime","Hour","Count")
+
+
+```
+
+```{r Shiny App}
+
+# Define UI for application that plots three different tabs for crimes that happened in Chaicago in year 2018 ----
+ui <- fluidPage(
+
+  # App Title ----
+  titlePanel("Chicago Crimes 2018"),
+  
+  
+    # Main panel for displaying outputs ----
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Frequency",  # Sidebar panel for Inputs ----
+                 sidebarPanel(
+                   
+                   # Input: Select variable for y-axis ----
+                   selectInput(inputId = "Crime",
+                               label = "Type of Crime",
+                               choices = crime_type_month_freq$Crime,
+                               selected = "")
+                   
+                 ),plotOutput("Frequency")),
+        
+        tabPanel("Map", # Input: Select variable for x-axis ----
+                 dateRangeInput(inputId = "DateTime",
+                                label = "Select Date",
+                                start = "2018-01-01",
+                                end = "2018-12-31"),
+                #dateInput(inputId = "DateTime",
+                 #         label = "Select Date")
+                 leafletOutput(outputId = "map")),
+        tabPanel("HeatMap", 
+                 plotOutput("HeatMap"))
+      )
+       
+    )
+)
+
+
+
+# Define server logic required to draw a scatterplot ----
+server <- function(input, output) {
+
+  # Create scatterplot object the plotOutput function is expecting ----
+  output$Frequency <- renderPlot({
+    crime_freq <-filter(crime_type_month_freq, `Crime`==input$Crime)
+    ggplot(data=crime_freq,aes(x=crime_freq$Month,y=crime_freq$Frequency))+xlab("Months")+ ylab("Count")+
+      ggtitle("Frequency of  Crimes")+geom_bar(fill = "#0073C2FF",stat="identity")+
+      geom_text(aes(label=Frequency), vjust=-1)+theme(plot.title = element_text(hjust = 0.5))
+  })
+  
+  #HeatMap
+  output$HeatMap<-renderPlot({
+          #ggplot(data = crime_type_hour_heatmap, mapping = aes(x = crime_type_hour_heatmap$Crime,    
+          #                                                     y = crime_type_hour_heatmap$Hour,    
+              #                                                 fill = crime_type_hour_heatmap$Count))+
+          #xlab("Crime")+ylab(" 24-Hr") +ggtitle("Heatmap of Frequency of Crime through out the day")+
+          #geom_tile()
+          #heatmap(crime_type_hour_heatmap%>%
+          #          dplyr::select(Crime,Hour)%>%table(),
+          #        Colv = NA,
+          #        Rowv = NA,
+          #        scale = "column")
+          crime_type_hour_heatmap$Crime<-factor(crime_type_hour_heatmap$Crime,
+                                                ordered = T,levels = c("ARSON","ASSAULT","BATTERY","BURGLARY","CONCEALED CARRY LICENSE VIOLATION","CRIM SEXUAL ASSAULT","CRIMINAL DAMAGE","CRIMINAL TRESPASS","DECEPTIVE PRACTICE","GAMBLING","HOMICIDE","HUMAN TRAFFICKING","INTERFERENCE WITH PUBLIC OFFICER","INTIMIDATION","KIDNAPPING","LIQUOR LAW VIOLATION","MOTOR VEHICLE THEFT","NARCOTICS","NON-CRIMINAL","OBSCENITY","OFFENSE INVOLVING CHILDREN","OTHER NARCOTIC VIOLATION","OTHER OFFENSE","PROSTITUTION","PUBLIC INDECENCY","PUBLIC PEACE VIOLATION","ROBBERY","SEX OFFENSE","STALKING","THEFT","WEAPONS VIOLATION"))
+          
+          ggplot(crime_type_hour_heatmap, aes(x = Hour, y = Crime)) + geom_tile(aes(fill = Count))
+  })
+  
+  #Map
+  output$map<-renderLeaflet({
+    crime_map<-filter(crime_loc_date_map, DateTime==input$DateTime)
+    leaflet(crime_map) %>% addTiles() %>%
+      addCircleMarkers(lat = ~Latitude, lng = ~Longitude)
+  })
+}
+
+# Create a Shiny app object
+shinyApp(ui = ui, server = server)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
